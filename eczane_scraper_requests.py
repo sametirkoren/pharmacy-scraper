@@ -231,10 +231,32 @@ def scrape_city(city_slug: str, db_session: Session, proxies=None, max_retries: 
                     # Detay sayfası linkini bul ve koordinat çek
                     lat, lon = None, None
                     detail_link = isim_elem.find_parent('a')
+                    if not detail_link:
+                        detail_link = row.select_one('a[href*="/eczane/"]')
+                    
+                    detail_url = None
                     if detail_link and detail_link.get('href'):
-                        detail_url = "https://www.eczaneler.gen.tr" + detail_link.get('href')
+                        href = detail_link.get('href')
+                        detail_url = href if href.startswith('http') else "https://www.eczaneler.gen.tr" + href
+                    else:
+                        # Link yoksa URL'yi oluştur
+                        def slugify(text):
+                            text = text.lower()
+                            replacements = {'ş':'s', 'ğ':'g', 'ü':'u', 'ö':'o', 'ı':'i', 'ç':'c', 'İ':'i', ' ':'-'}
+                            for k, v in replacements.items():
+                                text = text.replace(k, v)
+                            return re.sub(r'[^a-z0-9-]', '', text)
+                        
+                        pharmacy_slug = slugify(ad.replace(' Eczanesi', '').replace(' eczanesi', '')) + '-eczanesi'
+                        district_slug = slugify(ilce) if ilce else ''
+                        if district_slug:
+                            detail_url = f"https://www.eczaneler.gen.tr/eczane/{city_slug}-{district_slug}-{pharmacy_slug}"
+                        else:
+                            detail_url = f"https://www.eczaneler.gen.tr/eczane/{city_slug}-{pharmacy_slug}"
+                    
+                    if detail_url:
                         lat, lon = get_coords_from_detail_page(detail_url, proxies)
-                        time.sleep(0.2)  # Rate limiting
+                        time.sleep(0.2)
                     
                     pharmacy_data = {
                         "city": city_name,
