@@ -202,8 +202,6 @@ def scrape_city(city_slug: str, db_session: Session, max_retries: int = 3) -> Li
             logger.info(f"✅ {city_name}: {len(results)} yeni eczane kaydedildi")
             return results
             
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"⚠️ {city_name} request hatası (deneme {attempt}/{max_retries}): {e}")
         except Exception as e:
             logger.warning(f"⚠️ {city_name} hata (deneme {attempt}/{max_retries}): {e}")
     
