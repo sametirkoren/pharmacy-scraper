@@ -155,7 +155,16 @@ def get_coords_from_detail_page(detail_url: str, proxies=None) -> tuple:
         
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Google Maps iframe'inden çek
+        # 1. Meta tag'lardan çek (en güvenilir)
+        lat_meta = soup.select_one('meta[itemprop="latitude"]')
+        lon_meta = soup.select_one('meta[itemprop="longitude"]')
+        if lat_meta and lon_meta:
+            lat = lat_meta.get('content')
+            lon = lon_meta.get('content')
+            if lat and lon:
+                return lat, lon
+        
+        # 2. Google Maps iframe'inden çek
         iframe = soup.select_one('iframe[src*="google.com/maps"]')
         if iframe:
             src = iframe.get('src', '')
@@ -163,7 +172,7 @@ def get_coords_from_detail_page(detail_url: str, proxies=None) -> tuple:
             if lat and lon:
                 return lat, lon
         
-        # Google Maps linkinden çek
+        # 3. Google Maps linkinden çek
         maps_link = soup.select_one('a[href*="google.com/maps?daddr="]')
         if maps_link:
             return extract_coords_from_maps_link(maps_link.get('href', ''))
