@@ -8,6 +8,7 @@ from datetime import date
 from typing import Optional, List, Dict
 from bs4 import BeautifulSoup
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, Column, Text, Date, and_
