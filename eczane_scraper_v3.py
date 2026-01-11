@@ -44,7 +44,7 @@ REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
 # Global flag for database mode
 USE_DATABASE = True
 FETCH_COORDINATES = False  # Koordinat çekme - yavaşlatıyor
-MAX_WORKERS = 4  # Paralel browser sayısı
+MAX_WORKERS = 2  # GitHub Actions için azaltıldı (4'ten 2'ye)
 
 # Thread-local storage for database sessions
 thread_local = threading.local()
@@ -114,13 +114,20 @@ def create_driver():
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
-    options.add_argument("--disable-images")  # Resimleri devre dışı bırak - hızlandırır
-    options.add_argument("--blink-settings=imagesEnabled=false")
-    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-    options.page_load_strategy = 'eager'  # DOM yüklenince devam et
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-infobars")
+    options.add_argument("--remote-debugging-port=9222")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option("useAutomationExtension", False)
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    options.page_load_strategy = 'normal'  # Tam yükleme bekle
     
     driver = webdriver.Chrome(options=options)
-    driver.set_page_load_timeout(20)
+    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+        "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+    })
+    driver.set_page_load_timeout(45)  # Daha uzun timeout
     return driver
 
 
@@ -190,7 +197,7 @@ def scrape_city(city_slug: str, max_retries: int = 5) -> List[Dict]:
         try:
             driver = create_driver()
             driver.get(url)
-            WebDriverWait(driver, 10).until(
+            WebDriverWait(driver, 30).until(
                 EC.presence_of_element_located((By.ID, "nav-bugun"))
             )
             
