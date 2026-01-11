@@ -244,12 +244,15 @@ def main():
         except:
             logger.warning("⚠️ Redis bağlantısı kurulamadı")
     
-    # Tor proxy kontrolü
+    # Tor proxy kontrolü - ZORUNLU
     proxies = get_proxies()
     if proxies:
         logger.info("🧅 Tor proxy aktif")
     else:
-        logger.info("🌐 Direkt bağlantı kullanılıyor")
+        logger.error("❌ Tor proxy bulunamadı! Tor kurulu ve çalışıyor olmalı.")
+        logger.error("   Local: brew install tor && brew services start tor")
+        logger.error("   GitHub Actions: Otomatik kurulur")
+        exit(1)
     
     total_results = []
     failed_cities = []
