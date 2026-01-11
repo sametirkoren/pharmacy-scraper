@@ -436,6 +436,27 @@ def main():
     if failed_cities:
         logger.warning(f"❌ Başarısız: {failed_cities}")
     
+    # Redis'e şehir bazlı kaydet
+    if redis and total_results:
+        try:
+            # Şehir bazlı grupla
+            city_data = {}
+            for pharmacy in total_results:
+                city = pharmacy.get('city', 'Unknown')
+                if city not in city_data:
+                    city_data[city] = []
+                city_data[city].append(pharmacy)
+            
+            # Her şehri Redis'e kaydet
+            today_str = date.today().isoformat()
+            for city, pharmacies in city_data.items():
+                redis_key = f"{city}:{today_str}"
+                redis.set(redis_key, json.dumps(pharmacies, ensure_ascii=False))
+            
+            logger.info(f"📦 Redis: {len(city_data)} şehir kaydedildi")
+        except Exception as e:
+            logger.warning(f"⚠️ Redis kayıt hatası: {e}")
+    
     # JSON'a kaydet
     if total_results:
         output_file = f"eczaneler_{date.today().isoformat()}.json"
