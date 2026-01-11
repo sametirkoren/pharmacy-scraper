@@ -151,6 +151,7 @@ def get_coords_from_detail_page(detail_url: str, proxies=None) -> tuple:
     try:
         response = session.get(detail_url, proxies=proxies, timeout=10)
         if response.status_code != 200:
+            logger.debug(f"Detail page error {response.status_code}: {detail_url}")
             return None, None
         
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -176,8 +177,8 @@ def get_coords_from_detail_page(detail_url: str, proxies=None) -> tuple:
         maps_link = soup.select_one('a[href*="google.com/maps?daddr="]')
         if maps_link:
             return extract_coords_from_maps_link(maps_link.get('href', ''))
-    except:
-        pass
+    except Exception as e:
+        logger.debug(f"Detail page exception: {detail_url} - {e}")
     return None, None
 
 def scrape_city(city_slug: str, db_session: Session, proxies=None, max_retries: int = 3) -> List[Dict]:
@@ -256,7 +257,11 @@ def scrape_city(city_slug: str, db_session: Session, proxies=None, max_retries: 
                     
                     if detail_url:
                         lat, lon = get_coords_from_detail_page(detail_url, proxies)
+                        if not lat or not lon:
+                            logger.warning(f"⚠️ Koordinat bulunamadı: {ad} - {detail_url}")
                         time.sleep(0.2)
+                    else:
+                        logger.warning(f"⚠️ Detay linki bulunamadı: {ad}")
                     
                     pharmacy_data = {
                         "city": city_name,
