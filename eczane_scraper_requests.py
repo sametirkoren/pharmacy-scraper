@@ -3,11 +3,11 @@ import uuid
 import json
 import logging
 import requests
+import re
 from datetime import date
 from typing import Optional, List, Dict
 from bs4 import BeautifulSoup
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, Column, Text, Date, and_
@@ -130,6 +130,46 @@ ILLER_SLUG = list(ILLER_MAPPING.keys())
 def get_city_name(slug: str) -> str:
     return ILLER_MAPPING.get(slug, slug.title())
 
+def extract_coords_from_maps_link(maps_url: str) -> tuple:
+    """Google Maps linkinden lat/long çıkar"""
+    try:
+        # daddr=37.551095,35.392546 formatı
+        match = re.search(r'daddr=([-\d.]+),([-\d.]+)', maps_url)
+        if match:
+            return match.group(1), match.group(2)
+        # q=37.551095,35.392546 formatı (iframe'de)
+        match = re.search(r'[?&]q=([-\d.]+),([-\d.]+)', maps_url)
+        if match:
+            return match.group(1), match.group(2)
+    except:
+        pass
+    return None, None
+
+def get_coords_from_detail_page(detail_url: str, proxies=None) -> tuple:
+    """Eczane detay sayfasından koordinat çek"""
+    try:
+        response = session.get(detail_url, proxies=proxies, timeout=10)
+        if response.status_code != 200:
+            return None, None
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Google Maps iframe'inden çek
+        iframe = soup.select_one('iframe[src*="google.com/maps"]')
+        if iframe:
+            src = iframe.get('src', '')
+            lat, lon = extract_coords_from_maps_link(src)
+            if lat and lon:
+                return lat, lon
+        
+        # Google Maps linkinden çek
+        maps_link = soup.select_one('a[href*="google.com/maps?daddr="]')
+        if maps_link:
+            return extract_coords_from_maps_link(maps_link.get('href', ''))
+    except:
+        pass
+    return None, None
+
 def scrape_city(city_slug: str, db_session: Session, proxies=None, max_retries: int = 3) -> List[Dict]:
     url = f"https://www.eczaneler.gen.tr/nobetci-{city_slug}"
     city_name = get_city_name(city_slug)
@@ -178,13 +218,23 @@ def scrape_city(city_slug: str, db_session: Session, proxies=None, max_retries: 
                     col_lg_3_list = row.select('.col-lg-3')
                     telefon = col_lg_3_list[-1].get_text(strip=True) if col_lg_3_list else ""
                     
+                    # Detay sayfası linkini bul ve koordinat çek
+                    lat, lon = None, None
+                    detail_link = isim_elem.find_parent('a')
+                    if detail_link and detail_link.get('href'):
+                        detail_url = "https://www.eczaneler.gen.tr" + detail_link.get('href')
+                        lat, lon = get_coords_from_detail_page(detail_url, proxies)
+                        time.sleep(0.2)  # Rate limiting
+                    
                     pharmacy_data = {
                         "city": city_name,
                         "district": ilce,
                         "pharmacy": ad,
                         "address": adres_text,
                         "phone": telefon,
-                        "date": today.isoformat()
+                        "date": today.isoformat(),
+                        "latitude": lat,
+                        "longitude": lon
                     }
                     all_pharmacies.append(pharmacy_data)
                     
@@ -197,8 +247,8 @@ def scrape_city(city_slug: str, db_session: Session, proxies=None, max_retries: 
                             address=adres_text,
                             phone=telefon,
                             date=today,
-                            latitude=None,
-                            longitude=None
+                            latitude=lat,
+                            longitude=lon
                         )
                         db_session.add(pharmacy_entry)
                         results.append(pharmacy_data)
@@ -244,36 +294,28 @@ def main():
         except:
             logger.warning("⚠️ Redis bağlantısı kurulamadı")
     
-    # Tor proxy kontrolü - ZORUNLU
+    # Tor proxy kontrolü
     proxies = get_proxies()
     if proxies:
         logger.info("🧅 Tor proxy aktif")
     else:
-        logger.error("❌ Tor proxy bulunamadı! Tor kurulu ve çalışıyor olmalı.")
-        logger.error("   Local: brew install tor && brew services start tor")
-        logger.error("   GitHub Actions: Otomatik kurulur")
-        exit(1)
+        logger.info("🌐 Direkt bağlantı kullanılıyor")
     
+    db_session = SessionLocal()
     total_results = []
     failed_cities = []
     
-    MAX_WORKERS = 5  # Paralel worker sayısı
-    logger.info(f"🚀 {len(ILLER_SLUG)} şehir {MAX_WORKERS} paralel worker ile scrape edilecek")
+    logger.info(f"🚀 {len(ILLER_SLUG)} şehir için scraping başlıyor")
     
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {executor.submit(scrape_city, city, SessionLocal(), proxies): city for city in ILLER_SLUG}
-        
-        for future in as_completed(futures):
-            city = futures[future]
-            try:
-                results = future.result()
-                if results:
-                    total_results.extend(results)
-                else:
-                    failed_cities.append(city)
-            except Exception as e:
-                logger.error(f"❌ {city} hata: {e}")
-                failed_cities.append(city)
+    for city_slug in ILLER_SLUG:
+        results = scrape_city(city_slug, db_session, proxies=proxies)
+        if results:
+            total_results.extend(results)
+        else:
+            failed_cities.append(city_slug)
+        time.sleep(0.5)  # Rate limiting
+    
+    db_session.close()
     
     logger.info(f"\n{'='*50}")
     logger.info(f"📊 ÖZET: {len(total_results)} eczane kaydedildi")
