@@ -2,12 +2,11 @@ import os
 import uuid
 import json
 import logging
-import requests
+import cloudscraper
 from datetime import date
 from typing import Optional, List, Dict
 from bs4 import BeautifulSoup
 import time
-from urllib.parse import urlencode
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, Column, Text, Date, and_
@@ -31,7 +30,6 @@ load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 REDIS_URL = os.getenv("UPSTASH_REDIS_REST_URL")
 REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
-SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY")
 
 Base = declarative_base()
 engine = None
@@ -58,21 +56,10 @@ class Pharmacy(Base):
     latitude = Column(Text)
     longitude = Column(Text)
 
-def get_url(target_url: str) -> str:
-    """ScraperAPI ile URL oluştur"""
-    if SCRAPER_API_KEY:
-        params = {
-            'api_key': SCRAPER_API_KEY,
-            'url': target_url,
-            'country_code': 'tr'
-        }
-        return f"http://api.scraperapi.com?{urlencode(params)}"
-    return target_url
-
-session_requests = requests.Session()
-session_requests.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-})
+# Cloudscraper - Cloudflare bypass
+scraper = cloudscraper.create_scraper(
+    browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
+)
 
 def get_redis_client():
     if REDIS_URL and REDIS_TOKEN:
@@ -121,8 +108,7 @@ def get_city_name(slug: str) -> str:
     return ILLER_MAPPING.get(slug, slug.title())
 
 def scrape_city(city_slug: str, db_session: Session, max_retries: int = 3) -> List[Dict]:
-    target_url = f"https://www.eczaneler.gen.tr/nobetci-{city_slug}"
-    url = get_url(target_url)  # ScraperAPI proxy
+    url = f"https://www.eczaneler.gen.tr/nobetci-{city_slug}"
     city_name = get_city_name(city_slug)
     today = date.today()
     
@@ -132,7 +118,7 @@ def scrape_city(city_slug: str, db_session: Session, max_retries: int = 3) -> Li
                 logger.info(f"🔄 {city_name} - Deneme {attempt}/{max_retries}")
                 time.sleep(2)
             
-            response = session_requests.get(url, timeout=60)
+            response = scraper.get(url, timeout=30)
             response.raise_for_status()
             
             soup = BeautifulSoup(response.text, 'html.parser')
