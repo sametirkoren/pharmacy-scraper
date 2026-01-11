@@ -44,7 +44,7 @@ REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
 # Global flag for database mode
 USE_DATABASE = True
 FETCH_COORDINATES = False  # Koordinat çekme - yavaşlatıyor
-MAX_WORKERS = 2  # GitHub Actions için azaltıldı (4'ten 2'ye)
+MAX_WORKERS = 1  # GitHub Actions için sıralı çalışsın
 
 # Thread-local storage for database sessions
 thread_local = threading.local()
@@ -107,7 +107,7 @@ def close_thread_session():
 
 
 def create_driver():
-    """Create a new Selenium driver"""
+    """Create a new Selenium driver - GitHub Actions uyumlu"""
     options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--disable-gpu")
@@ -116,19 +116,16 @@ def create_driver():
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("--disable-extensions")
-    options.add_argument("--disable-infobars")
-    options.add_argument("--remote-debugging-port=9222")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option("useAutomationExtension", False)
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    options.page_load_strategy = 'normal'  # Tam yükleme bekle
+    options.page_load_strategy = 'eager'
     
-    driver = webdriver.Chrome(options=options)
-    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-        "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-    })
-    driver.set_page_load_timeout(45)  # Daha uzun timeout
-    return driver
+    try:
+        driver = webdriver.Chrome(options=options)
+        driver.set_page_load_timeout(60)
+        return driver
+    except Exception as e:
+        logger.error(f"Driver oluşturulamadı: {e}")
+        raise
 
 
 def check_duplicate(session: Session, city: str, pharmacy_name: str, target_date: date) -> bool:
