@@ -2,7 +2,7 @@ import os
 import uuid
 import json
 import logging
-import requests
+from curl_cffi import requests
 from datetime import date
 from typing import Optional, List, Dict
 from bs4 import BeautifulSoup
@@ -56,13 +56,8 @@ class Pharmacy(Base):
     latitude = Column(Text)
     longitude = Column(Text)
 
-# Session with retry
-session_requests = requests.Session()
-session_requests.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
-})
+# curl_cffi Session - Chrome fingerprint ile
+session_requests = requests.Session(impersonate="chrome120")
 
 def get_redis_client():
     if REDIS_URL and REDIS_TOKEN:
