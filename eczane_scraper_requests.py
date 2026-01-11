@@ -181,103 +181,156 @@ def get_coords_from_detail_page(detail_url: str, proxies=None) -> tuple:
         logger.debug(f"Detail page exception: {detail_url} - {e}")
     return None, None
 
-def scrape_city(city_slug: str, db_session: Session, proxies=None, max_retries: int = 3) -> List[Dict]:
+def get_district_urls(city_slug: str, proxies=None) -> List[str]:
+    """Şehrin ilçe sayfası URL'lerini çek"""
     url = f"https://www.eczaneler.gen.tr/nobetci-{city_slug}"
-    city_name = get_city_name(city_slug)
+    try:
+        response = session.get(url, proxies=proxies, timeout=30)
+        if response.status_code != 200:
+            return []
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # İlçe dropdown veya sidebar'dan linkleri çek
+        district_links = soup.select(f'a[href*="nobetci-{city_slug}-"]')
+        urls = list(set([link.get('href') for link in district_links if link.get('href')]))
+        
+        # Tam URL'ye çevir
+        full_urls = []
+        for u in urls:
+            if u.startswith('/'):
+                full_urls.append(f"https://www.eczaneler.gen.tr{u}")
+            elif u.startswith('http'):
+                full_urls.append(u)
+        
+        return full_urls
+    except:
+        return []
+
+def extract_district_from_url(url: str, city_slug: str) -> str:
+    """URL'den ilçe adını çıkar: nobetci-istanbul-bahcelievler -> Bahçelievler"""
+    # URL'den path kısmını al
+    path = url.split('/')[-1]  # nobetci-istanbul-bahcelievler
+    prefix = f"nobetci-{city_slug}-"
+    if prefix in path:
+        district_slug = path.replace(prefix, '')
+        # Slug'ı düzgün isme çevir
+        district_map = {
+            'bahcelievler': 'Bahçelievler', 'bakirkoy': 'Bakırköy', 'besiktas': 'Beşiktaş',
+            'beyoglu': 'Beyoğlu', 'fatih': 'Fatih', 'kadikoy': 'Kadıköy', 'sisli': 'Şişli',
+            'uskudar': 'Üsküdar', 'umraniye': 'Ümraniye', 'maltepe': 'Maltepe', 'kartal': 'Kartal',
+            'pendik': 'Pendik', 'tuzla': 'Tuzla', 'atasehir': 'Ataşehir', 'sancaktepe': 'Sancaktepe',
+            'sultanbeyli': 'Sultanbeyli', 'cekmekoy': 'Çekmeköy', 'beykoz': 'Beykoz',
+            'sariyer': 'Sarıyer', 'eyup': 'Eyüp', 'kagithane': 'Kağıthane', 'bayrampasa': 'Bayrampaşa',
+            'gaziosmanpasa': 'Gaziosmanpaşa', 'sultangazi': 'Sultangazi', 'esenler': 'Esenler',
+            'bagcilar': 'Bağcılar', 'gungoren': 'Güngören', 'zeytinburnu': 'Zeytinburnu',
+            'avcilar': 'Avcılar', 'kucukcekmece': 'Küçükçekmece', 'basaksehir': 'Başakşehir',
+            'esenyurt': 'Esenyurt', 'beylikduzu': 'Beylikdüzü', 'buyukcekmece': 'Büyükçekmece',
+            'arnavutkoy': 'Arnavutköy', 'catalca': 'Çatalca', 'silivri': 'Silivri', 'sile': 'Şile',
+            'adalar': 'Adalar'
+        }
+        return district_map.get(district_slug, district_slug.replace('-', ' ').title())
+    return ""
+
+def scrape_page(url: str, city_name: str, city_slug: str, db_session: Session, proxies=None) -> List[Dict]:
+    """Tek bir sayfayı scrape et (şehir veya ilçe)"""
     today = date.today()
     
-    for attempt in range(1, max_retries + 1):
-        try:
-            if attempt > 1:
-                logger.info(f"🔄 {city_name} - Deneme {attempt}/{max_retries}")
-                time.sleep(2)
-            
-            response = session.get(url, proxies=proxies, timeout=30)
-            response.raise_for_status()
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Bugünkü tab'ı bul
-            nav_bugun = soup.find('div', id='nav-bugun')
-            if not nav_bugun:
-                logger.warning(f"⚠️ {city_name}: nav-bugun bulunamadı")
-                continue
-            
-            # Eczaneleri bul
-            rows = nav_bugun.select("td[colspan='3'] .row")
-            logger.info(f"🔍 {city_name}: {len(rows)} eczane bulundu")
-            
-            all_pharmacies = []
-            results = []
-            
-            for row in rows:
+    # URL'den ilçe adını çıkar (fallback için)
+    district_from_url = extract_district_from_url(url, city_slug)
+    
+    try:
+        response = session.get(url, proxies=proxies, timeout=30)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Bugünkü tab'ı bul
+        nav_bugun = soup.find('div', id='nav-bugun')
+        if not nav_bugun:
+            return []
+        
+        # Eczaneleri bul
+        rows = nav_bugun.select("td[colspan='3'] .row")
+        if not rows:
+            return []
+        
+        all_pharmacies = []
+        results = []
+        
+        for row in rows:
+            try:
+                isim_elem = row.select_one('.isim')
+                if not isim_elem:
+                    continue
+                ad = isim_elem.get_text(strip=True)
+                
+                col_lg_6 = row.select_one('.col-lg-6')
+                if col_lg_6:
+                    adres_text = col_lg_6.get_text(separator='\n', strip=True).split('\n')[0]
+                else:
+                    adres_text = ""
+                
+                # İlçe her zaman URL'den gelsin (sayfa badge'i semt/mahalle bilgisi)
+                ilce = district_from_url
+                
+                col_lg_3_list = row.select('.col-lg-3')
+                telefon = col_lg_3_list[-1].get_text(strip=True) if col_lg_3_list else ""
+                
+                # Detay sayfası linkini bul ve koordinat çek
+                lat, lon = None, None
+                detail_link = None
+                
+                # 1. isim elementinin parent'ında link ara
+                detail_link = isim_elem.find_parent('a')
+                
+                # 2. col-lg-3 içinde link ara
+                if not detail_link:
+                    col_parent = isim_elem.find_parent('div', class_='col-lg-3')
+                    if col_parent:
+                        detail_link = col_parent.select_one('a[href*="/eczane/"]')
+                
+                # 3. Row içinde herhangi bir /eczane/ linki ara
+                if not detail_link:
+                    detail_link = row.select_one('a[href*="/eczane/"]')
+                
+                detail_url = None
+                if detail_link and detail_link.get('href'):
+                    href = detail_link.get('href')
+                    detail_url = href if href.startswith('http') else "https://www.eczaneler.gen.tr" + href
+                
+                if detail_url:
+                    lat, lon = get_coords_from_detail_page(detail_url, proxies)
+                    time.sleep(0.2)
+                
+                pharmacy_data = {
+                    "city": city_name,
+                    "district": ilce,
+                    "pharmacy": ad,
+                    "address": adres_text,
+                    "phone": telefon,
+                    "date": today.isoformat(),
+                    "latitude": lat,
+                    "longitude": lon
+                }
+                
+                all_pharmacies.append(pharmacy_data)
+                
+                # Veritabanına kaydet
                 try:
-                    isim_elem = row.select_one('.isim')
-                    if not isim_elem:
-                        continue
-                    ad = isim_elem.get_text(strip=True)
+                    existing = db_session.query(Pharmacy).filter_by(
+                        city=city_name,
+                        pharmacy=ad,
+                        date=today
+                    ).first()
                     
-                    col_lg_6 = row.select_one('.col-lg-6')
-                    if col_lg_6:
-                        adres_text = col_lg_6.get_text(separator='\n', strip=True).split('\n')[0]
-                        ilce_elem = col_lg_6.select_one('.bg-info')
-                        ilce = ilce_elem.get_text(strip=True) if ilce_elem else ""
+                    if existing:
+                        existing.district = ilce
+                        existing.address = adres_text
+                        existing.phone = telefon
+                        existing.latitude = lat
+                        existing.longitude = lon
                     else:
-                        adres_text = ""
-                        ilce = ""
-                    
-                    col_lg_3_list = row.select('.col-lg-3')
-                    telefon = col_lg_3_list[-1].get_text(strip=True) if col_lg_3_list else ""
-                    
-                    # Detay sayfası linkini bul ve koordinat çek
-                    lat, lon = None, None
-                    detail_link = isim_elem.find_parent('a')
-                    if not detail_link:
-                        detail_link = row.select_one('a[href*="/eczane/"]')
-                    
-                    detail_url = None
-                    if detail_link and detail_link.get('href'):
-                        href = detail_link.get('href')
-                        detail_url = href if href.startswith('http') else "https://www.eczaneler.gen.tr" + href
-                    else:
-                        # Link yoksa URL'yi oluştur
-                        def slugify(text):
-                            text = text.lower()
-                            replacements = {'ş':'s', 'ğ':'g', 'ü':'u', 'ö':'o', 'ı':'i', 'ç':'c', 'İ':'i', ' ':'-'}
-                            for k, v in replacements.items():
-                                text = text.replace(k, v)
-                            return re.sub(r'[^a-z0-9-]', '', text)
-                        
-                        pharmacy_slug = slugify(ad.replace(' Eczanesi', '').replace(' eczanesi', '')) + '-eczanesi'
-                        district_slug = slugify(ilce) if ilce else ''
-                        if district_slug:
-                            detail_url = f"https://www.eczaneler.gen.tr/eczane/{city_slug}-{district_slug}-{pharmacy_slug}"
-                        else:
-                            detail_url = f"https://www.eczaneler.gen.tr/eczane/{city_slug}-{pharmacy_slug}"
-                    
-                    if detail_url:
-                        lat, lon = get_coords_from_detail_page(detail_url, proxies)
-                        if not lat or not lon:
-                            logger.warning(f"⚠️ Koordinat bulunamadı: {ad} - {detail_url}")
-                        time.sleep(0.2)
-                    else:
-                        logger.warning(f"⚠️ Detay linki bulunamadı: {ad}")
-                    
-                    pharmacy_data = {
-                        "city": city_name,
-                        "district": ilce,
-                        "pharmacy": ad,
-                        "address": adres_text,
-                        "phone": telefon,
-                        "date": today.isoformat(),
-                        "latitude": lat,
-                        "longitude": lon
-                    }
-                    all_pharmacies.append(pharmacy_data)
-                    
-                    # DB'ye kaydet
-                    if db_session and not check_duplicate(db_session, city_name, ad, today):
-                        pharmacy_entry = Pharmacy(
+                        new_pharmacy = Pharmacy(
                             city=city_name,
                             district=ilce,
                             pharmacy=ad,
@@ -287,38 +340,49 @@ def scrape_city(city_slug: str, db_session: Session, proxies=None, max_retries: 
                             latitude=lat,
                             longitude=lon
                         )
-                        db_session.add(pharmacy_entry)
-                        results.append(pharmacy_data)
-                        
-                except Exception as e:
-                    continue
-            
-            # Commit
-            if db_session:
-                try:
+                        db_session.add(new_pharmacy)
+                    
                     db_session.commit()
+                    results.append(pharmacy_data)
                 except Exception as e:
                     db_session.rollback()
-                    logger.error(f"DB commit hatası {city_name}: {e}")
-            
-            # Redis'e yaz
-            redis = get_redis_client()
-            if redis and all_pharmacies:
-                try:
-                    redis_key = f"{city_name}:{today.isoformat()}"
-                    redis.set(redis_key, json.dumps(all_pharmacies, ensure_ascii=False))
-                    logger.info(f"📦 Redis: {city_name} - {len(all_pharmacies)} eczane")
-                except:
-                    pass
-            
-            logger.info(f"✅ {city_name}: {len(results)} yeni eczane kaydedildi")
-            return results
-            
-        except Exception as e:
-            logger.warning(f"⚠️ {city_name} hata (deneme {attempt}/{max_retries}): {e}")
+                    logger.error(f"DB error: {e}")
+            except Exception as e:
+                logger.error(f"Row error: {e}")
+                continue
+        
+        return results
+    except Exception as e:
+        logger.error(f"Page error {url}: {e}")
+        return []
+
+def scrape_city(city_slug: str, db_session: Session, proxies=None, max_retries: int = 3) -> List[Dict]:
+    url = f"https://www.eczaneler.gen.tr/nobetci-{city_slug}"
+    city_name = get_city_name(city_slug)
+    today = date.today()
     
-    logger.error(f"❌ {city_name} - {max_retries} deneme sonrası başarısız")
-    return []
+    # Önce ilçe sayfalarını dene (linkler orada var)
+    district_urls = get_district_urls(city_slug, proxies)
+    
+    if district_urls:
+        logger.info(f"🏘️ {city_name}: {len(district_urls)} ilçe bulundu, ilçe sayfaları scrape edilecek")
+        all_results = []
+        for district_url in district_urls:
+            results = scrape_page(district_url, city_name, city_slug, db_session, proxies)
+            if results:
+                all_results.extend(results)
+            time.sleep(0.3)
+        
+        if all_results:
+            logger.info(f"✅ {city_name}: {len(all_results)} eczane (ilçe sayfalarından)")
+            return all_results
+    
+    # İlçe yoksa ana sayfayı scrape et (küçük şehirler için)
+    logger.info(f"� {city_name}: Ana sayfa scrape edilecek")
+    results = scrape_page(url, city_name, city_slug, db_session, proxies)
+    if results:
+        logger.info(f"✅ {city_name}: {len(results)} eczane (ana sayfadan)")
+    return results
 
 def main():
     init_database()
@@ -344,11 +408,15 @@ def main():
     total_results = []
     failed_cities = []
     
-    MAX_WORKERS = 5
-    logger.info(f"🚀 {len(ILLER_SLUG)} şehir {MAX_WORKERS} paralel worker ile scrape edilecek")
+    # Test için sadece belirli şehirler (None = hepsi)
+    TEST_CITIES = None  # Production: tüm şehirler
+    cities_to_scrape = TEST_CITIES if TEST_CITIES else ILLER_SLUG
+    
+    MAX_WORKERS = 5 if not TEST_CITIES else 1
+    logger.info(f"🚀 {len(cities_to_scrape)} şehir {MAX_WORKERS} paralel worker ile scrape edilecek")
     
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {executor.submit(scrape_city, city, SessionLocal(), proxies): city for city in ILLER_SLUG}
+        futures = {executor.submit(scrape_city, city, SessionLocal(), proxies): city for city in cities_to_scrape}
         
         for future in as_completed(futures):
             city = futures[future]
