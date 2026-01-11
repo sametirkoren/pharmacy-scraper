@@ -7,6 +7,7 @@ from datetime import date
 from typing import Optional, List, Dict
 from bs4 import BeautifulSoup
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, Column, Text, Date, and_
@@ -250,21 +251,26 @@ def main():
     else:
         logger.info("🌐 Direkt bağlantı kullanılıyor")
     
-    db_session = SessionLocal()
     total_results = []
     failed_cities = []
     
-    logger.info(f"🚀 {len(ILLER_SLUG)} şehir için scraping başlıyor")
+    MAX_WORKERS = 5  # Paralel worker sayısı
+    logger.info(f"🚀 {len(ILLER_SLUG)} şehir {MAX_WORKERS} paralel worker ile scrape edilecek")
     
-    for city_slug in ILLER_SLUG:
-        results = scrape_city(city_slug, db_session, proxies=proxies)
-        if results:
-            total_results.extend(results)
-        else:
-            failed_cities.append(city_slug)
-        time.sleep(0.5)  # Rate limiting
-    
-    db_session.close()
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {executor.submit(scrape_city, city, SessionLocal(), proxies): city for city in ILLER_SLUG}
+        
+        for future in as_completed(futures):
+            city = futures[future]
+            try:
+                results = future.result()
+                if results:
+                    total_results.extend(results)
+                else:
+                    failed_cities.append(city)
+            except Exception as e:
+                logger.error(f"❌ {city} hata: {e}")
+                failed_cities.append(city)
     
     logger.info(f"\n{'='*50}")
     logger.info(f"📊 ÖZET: {len(total_results)} eczane kaydedildi")
