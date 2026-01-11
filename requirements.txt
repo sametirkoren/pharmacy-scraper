@@ -3,4 +3,5 @@ sqlalchemy==2.0.23
 psycopg2-binary==2.9.9
 upstash-redis==1.0.0
 beautifulsoup4==4.12.2
-cloudscraper==1.2.71
+requests==2.31.0
+PySocks==1.7.1

@@ -2,7 +2,7 @@ import os
 import uuid
 import json
 import logging
-import cloudscraper
+import requests
 from datetime import date
 from typing import Optional, List, Dict
 from bs4 import BeautifulSoup
@@ -56,10 +56,32 @@ class Pharmacy(Base):
     latitude = Column(Text)
     longitude = Column(Text)
 
-# Cloudscraper - Cloudflare bypass
-scraper = cloudscraper.create_scraper(
-    browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
-)
+# Tor proxy ayarları (GitHub Actions'ta çalışır)
+TOR_PROXY = {
+    'http': 'socks5h://127.0.0.1:9050',
+    'https': 'socks5h://127.0.0.1:9050'
+}
+
+# Session oluştur
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'tr-TR,tr;q=0.9',
+})
+
+# Tor proxy'yi test et, yoksa direkt bağlan
+def get_proxies():
+    try:
+        test = requests.get('http://127.0.0.1:9050', timeout=2)
+    except:
+        pass
+    # Tor çalışıyorsa proxy kullan
+    try:
+        requests.get('https://check.torproject.org', proxies=TOR_PROXY, timeout=10)
+        return TOR_PROXY
+    except:
+        return None
 
 def get_redis_client():
     if REDIS_URL and REDIS_TOKEN:
@@ -107,7 +129,7 @@ ILLER_SLUG = list(ILLER_MAPPING.keys())
 def get_city_name(slug: str) -> str:
     return ILLER_MAPPING.get(slug, slug.title())
 
-def scrape_city(city_slug: str, db_session: Session, max_retries: int = 3) -> List[Dict]:
+def scrape_city(city_slug: str, db_session: Session, proxies=None, max_retries: int = 3) -> List[Dict]:
     url = f"https://www.eczaneler.gen.tr/nobetci-{city_slug}"
     city_name = get_city_name(city_slug)
     today = date.today()
@@ -118,7 +140,7 @@ def scrape_city(city_slug: str, db_session: Session, max_retries: int = 3) -> Li
                 logger.info(f"🔄 {city_name} - Deneme {attempt}/{max_retries}")
                 time.sleep(2)
             
-            response = scraper.get(url, timeout=30)
+            response = session.get(url, proxies=proxies, timeout=30)
             response.raise_for_status()
             
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -221,6 +243,13 @@ def main():
         except:
             logger.warning("⚠️ Redis bağlantısı kurulamadı")
     
+    # Tor proxy kontrolü
+    proxies = get_proxies()
+    if proxies:
+        logger.info("🧅 Tor proxy aktif")
+    else:
+        logger.info("🌐 Direkt bağlantı kullanılıyor")
+    
     db_session = SessionLocal()
     total_results = []
     failed_cities = []
@@ -228,7 +257,7 @@ def main():
     logger.info(f"🚀 {len(ILLER_SLUG)} şehir için scraping başlıyor")
     
     for city_slug in ILLER_SLUG:
-        results = scrape_city(city_slug, db_session)
+        results = scrape_city(city_slug, db_session, proxies=proxies)
         if results:
             total_results.extend(results)
         else:
