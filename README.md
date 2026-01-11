@@ -1,93 +1,94 @@
 # Nöbetçi Eczane Scraper 🏥
 
-Türkiye genelinde nöbetçi eczaneleri çeken ve Supabase veritabanına kaydeden scraper.
+Türkiye genelindeki **82 şehir** ve tüm ilçelerden nöbetçi eczane verilerini çeken, PostgreSQL ve Redis'e kaydeden scraper.
 
-## İyileştirmeler (v2)
+## Özellikler
 
-- **Error Handling**: Retry mekanizması (3 deneme, exponential backoff)
-- **Logging**: Dosya + konsol loglama (`scraper.log`)
-- **Duplicate Check**: Aynı gün için tekrar kayıt engelleme
-- **Context Managers**: Driver ve DB session düzgün yönetimi
-- **Eski Veri Temizleme**: 7 günden eski kayıtları otomatik silme
-- **CLI Argümanları**: Belirli şehirler için çalıştırma
+- 🧅 **Tor Proxy** - Cloudflare bypass için zorunlu
+- 🚀 **Paralel İşlem** - 5 worker ile hızlı scraping
+- 📍 **Koordinat Çekme** - Detay sayfalarından lat/long
+- 🏘️ **İlçe Bazlı** - Doğru ilçe bilgisi (URL'den)
+- 💾 **PostgreSQL** - Kalıcı veri depolama
+- ⚡ **Redis Cache** - Şehir bazlı hızlı erişim
+- 📅 **Günlük Çalışma** - GitHub Actions cron job
+
+## Veri Yapısı
+
+```json
+{
+  "city": "İstanbul",
+  "district": "Kadıköy",
+  "pharmacy": "Merkez Eczanesi",
+  "address": "Caferağa Mah. Moda Cad. No:12",
+  "phone": "0 (216) 123-45-67",
+  "date": "2026-01-11",
+  "latitude": "40.987654",
+  "longitude": "29.012345"
+}
+```
 
 ## Kurulum
+
+### Gereksinimler
 
 ```bash
 pip install -r requirements.txt
 ```
 
+### Tor Proxy (Zorunlu)
+
+**macOS:**
+```bash
+brew install tor
+brew services start tor
+```
+
+**Ubuntu/GitHub Actions:**
+```bash
+sudo apt-get install tor
+sudo service tor start
+```
+
+### Çevre Değişkenleri
+
+`.env` dosyası oluştur:
+
+```env
+DATABASE_URL=postgresql://user:pass@host:port/db
+UPSTASH_REDIS_REST_URL=https://xxx.upstash.io
+UPSTASH_REDIS_REST_TOKEN=xxx
+```
+
 ## Kullanım
 
 ```bash
-# Tüm şehirler
-python eczane_scraper_v2.py
-
-# Belirli şehirler
-python eczane_scraper_v2.py --cities istanbul ankara izmir
-
-# Eski verileri silmeden
-python eczane_scraper_v2.py --no-clear
+python eczane_scraper_requests.py
 ```
 
-## GitHub Actions ile Günlük Çalıştırma
+## GitHub Actions
 
-### 1. Repository'yi GitHub'a Push Et
+Workflow her gün **UTC 03:00** (Türkiye 06:00) otomatik çalışır.
 
-```bash
-cd /Users/sametirkoren/Desktop/scrapping
-git init
-git add .
-git commit -m "Initial commit"
-git remote add origin https://github.com/KULLANICI_ADIN/eczane-scraper.git
-git push -u origin main
+### Secrets
+
+Repository Settings → Secrets → Actions:
+
+| Secret | Açıklama |
+|--------|----------|
+| `DATABASE_URL` | PostgreSQL bağlantı URL'i |
+| `UPSTASH_REDIS_REST_URL` | Redis URL |
+| `UPSTASH_REDIS_REST_TOKEN` | Redis token |
+
+### Manuel Çalıştırma
+
+Actions → Daily Pharmacy Scraper → Run workflow
+
+## Redis Key Format
+
 ```
-
-### 2. GitHub Secrets Ekle
-
-Repository Settings → Secrets and variables → Actions → New repository secret:
-
-| Secret Name | Değer |
-|-------------|-------|
-| `DATABASE_URL` | Supabase PostgreSQL bağlantı URL'i |
-| `UPSTASH_REDIS_REST_URL` | Redis URL (opsiyonel) |
-| `UPSTASH_REDIS_REST_TOKEN` | Redis token (opsiyonel) |
-
-**Supabase URL formatı:**
-```
-postgresql://postgres.[PROJECT_REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres
-```
-
-### 3. Workflow Aktif
-
-Workflow her gün **Türkiye saati 06:00**'da otomatik çalışır.
-
-Manuel çalıştırmak için: Actions → Daily Pharmacy Scraper → Run workflow
-
-## Alternatif: Supabase Edge Function + pg_cron
-
-Supabase'de doğrudan cron job çalıştırmak istersen:
-
-```sql
--- pg_cron extension aktif et (Supabase Dashboard → Database → Extensions)
-select cron.schedule(
-  'daily-pharmacy-scraper',
-  '0 3 * * *', -- Her gün UTC 03:00
-  $$SELECT net.http_post(
-    url:='https://your-edge-function-url.supabase.co/functions/v1/scrape-pharmacies',
-    headers:='{"Authorization": "Bearer YOUR_ANON_KEY"}'::jsonb
-  )$$
-);
-```
-
-## Çevre Değişkenleri
-
-`.env` dosyası:
-
-```env
-DATABASE_URL=postgresql://...
-UPSTASH_REDIS_REST_URL=https://...
-UPSTASH_REDIS_REST_TOKEN=...
+{Şehir}:{Tarih}
+İstanbul:2026-01-11
+Ankara:2026-01-11
 ```
 
 ## Lisans
