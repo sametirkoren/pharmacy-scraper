@@ -31,6 +31,7 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
           UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
         run: |
           python eczane_scraper_requests.py
 
