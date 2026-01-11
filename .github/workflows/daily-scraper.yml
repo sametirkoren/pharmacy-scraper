@@ -21,16 +21,10 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install Chrome
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable
-
       - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          pip install webdriver-manager
 
       - name: Run scraper
         env:
@@ -38,7 +32,7 @@ jobs:
           UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
           UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
         run: |
-          python eczane_scraper_v3.py --workers 1
+          python eczane_scraper_requests.py
 
       - name: Upload logs
         if: always()
