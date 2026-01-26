@@ -2,9 +2,8 @@ name: Daily Pharmacy Scraper
 
 on:
   schedule:
-    # Her gün Türkiye saati 09:30'da çalışır (UTC 06:30)
-    # Nöbet değişimi sabah 08:00-09:00 civarı olduğu için bu saat güvenli
-    - cron: '30 6 * * *'
+    # Her gün Türkiye saati 12:30'da çalışır (UTC 09:30)
+    - cron: '30 9 * * *'
   workflow_dispatch: # Manuel tetikleme için
 
 jobs:
