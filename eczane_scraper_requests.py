@@ -231,9 +231,30 @@ def extract_district_from_url(url: str, city_slug: str) -> str:
         return district_map.get(district_slug, district_slug.replace('-', ' ').title())
     return ""
 
+def parse_date_from_alert(alert_text: str) -> date:
+    """Alert mesajından tarihi parse et: '5 Şubat Perşembe akşamından...' -> date(2026, 2, 5)"""
+    months = {
+        'ocak': 1, 'şubat': 2, 'mart': 3, 'nisan': 4, 'mayıs': 5, 'haziran': 6,
+        'temmuz': 7, 'ağustos': 8, 'eylül': 9, 'ekim': 10, 'kasım': 11, 'aralık': 12
+    }
+    
+    # "5 Şubat" formatını bul
+    match = re.search(r'(\d{1,2})\s+(ocak|şubat|mart|nisan|mayıs|haziran|temmuz|ağustos|eylül|ekim|kasım|aralık)', 
+                      alert_text.lower())
+    if match:
+        day = int(match.group(1))
+        month = months.get(match.group(2))
+        if month:
+            year = date.today().year
+            # Aralık'ta Ocak tarihini görürsek sonraki yıl
+            if date.today().month == 12 and month == 1:
+                year += 1
+            return date(year, month, day)
+    
+    return date.today()
+
 def scrape_page(url: str, city_name: str, city_slug: str, db_session: Session, proxies=None) -> List[Dict]:
     """Tek bir sayfayı scrape et (şehir veya ilçe)"""
-    today = date.today()
     
     # URL'den ilçe adını çıkar (fallback için)
     district_from_url = extract_district_from_url(url, city_slug)
@@ -248,6 +269,15 @@ def scrape_page(url: str, city_name: str, city_slug: str, db_session: Session, p
         nav_bugun = soup.find('div', id='nav-bugun')
         if not nav_bugun:
             return []
+        
+        # Alert mesajından gerçek tarihi al
+        alert_elem = nav_bugun.select_one('.alert-warning')
+        if alert_elem:
+            pharmacy_date = parse_date_from_alert(alert_elem.get_text())
+            logger.info(f"📅 Tarih parse edildi: {pharmacy_date.isoformat()} - {alert_elem.get_text()[:50]}...")
+        else:
+            pharmacy_date = date.today()
+            logger.warning(f"⚠️ Alert bulunamadı, date.today() kullanılıyor: {pharmacy_date}")
         
         # Eczaneleri bul
         rows = nav_bugun.select("td[colspan='3'] .row")
@@ -308,7 +338,7 @@ def scrape_page(url: str, city_name: str, city_slug: str, db_session: Session, p
                     "pharmacy": ad,
                     "address": adres_text,
                     "phone": telefon,
-                    "date": today.isoformat(),
+                    "date": pharmacy_date.isoformat(),
                     "latitude": lat,
                     "longitude": lon
                 }
@@ -320,7 +350,7 @@ def scrape_page(url: str, city_name: str, city_slug: str, db_session: Session, p
                     existing = db_session.query(Pharmacy).filter_by(
                         city=city_name,
                         pharmacy=ad,
-                        date=today
+                        date=pharmacy_date
                     ).first()
                     
                     if existing:
@@ -336,7 +366,7 @@ def scrape_page(url: str, city_name: str, city_slug: str, db_session: Session, p
                             pharmacy=ad,
                             address=adres_text,
                             phone=telefon,
-                            date=today,
+                            date=pharmacy_date,
                             latitude=lat,
                             longitude=lon
                         )
@@ -359,7 +389,6 @@ def scrape_page(url: str, city_name: str, city_slug: str, db_session: Session, p
 def scrape_city(city_slug: str, db_session: Session, proxies=None, max_retries: int = 3) -> List[Dict]:
     url = f"https://www.eczaneler.gen.tr/nobetci-{city_slug}"
     city_name = get_city_name(city_slug)
-    today = date.today()
     
     # Önce ilçe sayfalarını dene (linkler orada var)
     district_urls = get_district_urls(city_slug, proxies)
