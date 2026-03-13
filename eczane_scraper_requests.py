@@ -3,7 +3,7 @@ import uuid
 import json
 import logging
 import requests
-import cloudscraper
+from curl_cffi import requests as cffi_requests
 import re
 import random
 from datetime import date
@@ -60,22 +60,10 @@ class Pharmacy(Base):
     latitude = Column(Text)
     longitude = Column(Text)
 
-# Cloudscraper session oluştur (Cloudflare bypass)
-session = cloudscraper.create_scraper(
-    browser={
-        'browser': 'chrome',
-        'platform': 'windows',
-        'desktop': True
-    }
-)
-session.headers.update({
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-    'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Connection': 'keep-alive',
-    'Upgrade-Insecure-Requests': '1',
-    'Cache-Control': 'max-age=0',
-})
+# curl_cffi ile Chrome TLS fingerprint kullan (Cloudflare bypass)
+def fetch_url(url: str, timeout: int = 30):
+    """Chrome TLS fingerprint ile sayfa çek"""
+    return cffi_requests.get(url, impersonate='chrome', timeout=timeout)
 
 def get_redis_client():
     if REDIS_URL and REDIS_TOKEN:
@@ -141,7 +129,7 @@ def extract_coords_from_maps_link(maps_url: str) -> tuple:
 def get_coords_from_detail_page(detail_url: str, proxies=None) -> tuple:
     """Eczane detay sayfasından koordinat çek"""
     try:
-        response = session.get(detail_url, proxies=proxies, timeout=10)
+        response = fetch_url(detail_url, timeout=10)
         if response.status_code != 200:
             logger.debug(f"Detail page error {response.status_code}: {detail_url}")
             return None, None
@@ -177,7 +165,7 @@ def get_district_urls(city_slug: str, proxies=None) -> List[str]:
     """Şehrin ilçe sayfası URL'lerini çek"""
     url = f"https://www.eczaneler.gen.tr/nobetci-{city_slug}"
     try:
-        response = session.get(url, proxies=proxies, timeout=30)
+        response = fetch_url(url, timeout=30)
         if response.status_code != 200:
             return []
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -255,8 +243,20 @@ def scrape_page(url: str, city_name: str, city_slug: str, db_session: Session, p
     time.sleep(random.uniform(1.5, 3.0))
     
     try:
-        response = session.get(url, proxies=proxies, timeout=30)
-        response.raise_for_status()
+        response = fetch_url(url, timeout=30)
+        
+        if response.status_code == 403:
+            if retry_count < 3:
+                wait = (retry_count + 1) * 5
+                logger.warning(f"⚠️ 403 hatası, {wait}s bekleyip tekrar denenecek ({retry_count+1}/3): {url}")
+                time.sleep(wait)
+                return scrape_page(url, city_name, city_slug, db_session, proxies, retry_count + 1)
+            logger.error(f"Page error {url}: 403 Forbidden (3 deneme sonra)")
+            return []
+        
+        if response.status_code != 200:
+            logger.error(f"Page error {url}: HTTP {response.status_code}")
+            return []
         
         soup = BeautifulSoup(response.text, 'html.parser')
         
@@ -377,14 +377,6 @@ def scrape_page(url: str, city_name: str, city_slug: str, db_session: Session, p
                 continue
         
         return results
-    except requests.exceptions.HTTPError as e:
-        if e.response is not None and e.response.status_code == 403 and retry_count < 3:
-            wait = (retry_count + 1) * 5
-            logger.warning(f"⚠️ 403 hatası, {wait}s bekleyip tekrar denenecek ({retry_count+1}/3): {url}")
-            time.sleep(wait)
-            return scrape_page(url, city_name, city_slug, db_session, proxies, retry_count + 1)
-        logger.error(f"Page error {url}: {e}")
-        return []
     except Exception as e:
         logger.error(f"Page error {url}: {e}")
         return []
