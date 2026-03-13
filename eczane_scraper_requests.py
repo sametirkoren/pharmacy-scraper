@@ -3,6 +3,7 @@ import uuid
 import json
 import logging
 import requests
+import cloudscraper
 import re
 import random
 from datetime import date
@@ -59,32 +60,22 @@ class Pharmacy(Base):
     latitude = Column(Text)
     longitude = Column(Text)
 
-# Tor proxy ayarları (GitHub Actions'ta çalışır)
-TOR_PROXY = {
-    'http': 'socks5h://127.0.0.1:9050',
-    'https': 'socks5h://127.0.0.1:9050'
-}
-
-# Session oluştur
-session = requests.Session()
+# Cloudscraper session oluştur (Cloudflare bypass)
+session = cloudscraper.create_scraper(
+    browser={
+        'browser': 'chrome',
+        'platform': 'windows',
+        'desktop': True
+    }
+)
 session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'tr-TR,tr;q=0.9',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+    'Cache-Control': 'max-age=0',
 })
-
-# Tor proxy'yi test et, yoksa direkt bağlan
-def get_proxies():
-    try:
-        test = requests.get('http://127.0.0.1:9050', timeout=2)
-    except:
-        pass
-    # Tor çalışıyorsa proxy kullan
-    try:
-        requests.get('https://check.torproject.org', proxies=TOR_PROXY, timeout=10)
-        return TOR_PROXY
-    except:
-        return None
 
 def get_redis_client():
     if REDIS_URL and REDIS_TOKEN:
@@ -436,10 +427,7 @@ def main():
         except:
             logger.warning("⚠️ Redis bağlantısı kurulamadı")
     
-    # Tor proxy KULLANMA - site Tor IP'lerini engelliyor (403)
-    # Direkt bağlantı ile 200 OK dönüyor
-    proxies = None
-    logger.info("🌐 Direkt bağlantı kullanılacak (Tor engelleniyor)")
+    logger.info("🌐 Cloudscraper ile Cloudflare bypass aktif")
     
     total_results = []
     failed_cities = []
@@ -448,11 +436,11 @@ def main():
     TEST_CITIES = None  # Production: tüm şehirler
     cities_to_scrape = TEST_CITIES if TEST_CITIES else ILLER_SLUG
     
-    logger.info(f"🚀 {len(cities_to_scrape)} şehir sırayla scrape edilecek (rate limit koruması)")
+    logger.info(f"🚀 {len(cities_to_scrape)} şehir sırayla scrape edilecek")
     
     for city in cities_to_scrape:
         try:
-            results = scrape_city(city, SessionLocal(), proxies)
+            results = scrape_city(city, SessionLocal(), None)
             if results:
                 total_results.extend(results)
             else:
