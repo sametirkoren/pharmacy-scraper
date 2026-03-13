@@ -4,6 +4,7 @@ import json
 import logging
 import requests
 import re
+import random
 from datetime import date
 from typing import Optional, List, Dict
 from bs4 import BeautifulSoup
@@ -253,11 +254,14 @@ def parse_date_from_alert(alert_text: str) -> date:
     
     return date.today()
 
-def scrape_page(url: str, city_name: str, city_slug: str, db_session: Session, proxies=None) -> List[Dict]:
+def scrape_page(url: str, city_name: str, city_slug: str, db_session: Session, proxies=None, retry_count: int = 0) -> List[Dict]:
     """Tek bir sayfayı scrape et (şehir veya ilçe)"""
     
     # URL'den ilçe adını çıkar (fallback için)
     district_from_url = extract_district_from_url(url, city_slug)
+    
+    # Rate limit'ten kaçınmak için delay
+    time.sleep(random.uniform(1.5, 3.0))
     
     try:
         response = session.get(url, proxies=proxies, timeout=30)
@@ -382,6 +386,14 @@ def scrape_page(url: str, city_name: str, city_slug: str, db_session: Session, p
                 continue
         
         return results
+    except requests.exceptions.HTTPError as e:
+        if e.response is not None and e.response.status_code == 403 and retry_count < 3:
+            wait = (retry_count + 1) * 5
+            logger.warning(f"⚠️ 403 hatası, {wait}s bekleyip tekrar denenecek ({retry_count+1}/3): {url}")
+            time.sleep(wait)
+            return scrape_page(url, city_name, city_slug, db_session, proxies, retry_count + 1)
+        logger.error(f"Page error {url}: {e}")
+        return []
     except Exception as e:
         logger.error(f"Page error {url}: {e}")
         return []
@@ -436,23 +448,18 @@ def main():
     TEST_CITIES = None  # Production: tüm şehirler
     cities_to_scrape = TEST_CITIES if TEST_CITIES else ILLER_SLUG
     
-    MAX_WORKERS = 5 if not TEST_CITIES else 1
-    logger.info(f"🚀 {len(cities_to_scrape)} şehir {MAX_WORKERS} paralel worker ile scrape edilecek")
+    logger.info(f"🚀 {len(cities_to_scrape)} şehir sırayla scrape edilecek (rate limit koruması)")
     
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {executor.submit(scrape_city, city, SessionLocal(), proxies): city for city in cities_to_scrape}
-        
-        for future in as_completed(futures):
-            city = futures[future]
-            try:
-                results = future.result()
-                if results:
-                    total_results.extend(results)
-                else:
-                    failed_cities.append(city)
-            except Exception as e:
-                logger.error(f"❌ {city} hata: {e}")
+    for city in cities_to_scrape:
+        try:
+            results = scrape_city(city, SessionLocal(), proxies)
+            if results:
+                total_results.extend(results)
+            else:
                 failed_cities.append(city)
+        except Exception as e:
+            logger.error(f"❌ {city} hata: {e}")
+            failed_cities.append(city)
     
     logger.info(f"\n{'='*50}")
     logger.info(f"📊 ÖZET: {len(total_results)} eczane kaydedildi")
