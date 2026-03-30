@@ -2,16 +2,14 @@ import os
 import uuid
 import json
 import logging
-import requests
-from curl_cffi import requests as cffi_requests
 import re
 import random
 from datetime import date
 from typing import Optional, List, Dict
 from bs4 import BeautifulSoup
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, Column, Text, Date, and_
 from sqlalchemy.dialects.postgresql import UUID
@@ -60,10 +58,75 @@ class Pharmacy(Base):
     latitude = Column(Text)
     longitude = Column(Text)
 
-# curl_cffi ile Chrome TLS fingerprint kullan (Cloudflare bypass)
-def fetch_url(url: str, timeout: int = 30):
-    """Chrome TLS fingerprint ile sayfa çek"""
-    return cffi_requests.get(url, impersonate='chrome', timeout=timeout)
+# Playwright browser yönetimi
+_playwright = None
+_browser: Optional[Browser] = None
+_context: Optional[BrowserContext] = None
+
+
+class FetchResponse:
+    """requests-uyumlu response wrapper"""
+    def __init__(self, status_code: int, text: str):
+        self.status_code = status_code
+        self.text = text
+
+
+def init_browser():
+    """Playwright browser başlat"""
+    global _playwright, _browser, _context
+    _playwright = sync_playwright().start()
+    _browser = _playwright.chromium.launch(headless=True)
+    _context = _browser.new_context(
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        viewport={"width": 1920, "height": 1080},
+        locale="tr-TR",
+        timezone_id="Europe/Istanbul",
+    )
+    # Webdriver detection'ı gizle
+    _context.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        Object.defineProperty(navigator, 'languages', { get: () => ['tr-TR', 'tr', 'en-US', 'en'] });
+        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+        window.chrome = { runtime: {} };
+    """)
+    logger.info("Playwright browser baslatildi")
+
+
+def close_browser():
+    """Playwright browser kapat"""
+    global _playwright, _browser, _context
+    if _context:
+        _context.close()
+    if _browser:
+        _browser.close()
+    if _playwright:
+        _playwright.stop()
+    _context = None
+    _browser = None
+    _playwright = None
+
+
+def fetch_url(url: str, timeout: int = 30) -> FetchResponse:
+    """Playwright ile sayfa cek (Cloudflare bypass)"""
+    page = _context.new_page()
+    try:
+        response = page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+        status_code = response.status if response else 0
+        # Cloudflare challenge varsa bekle
+        if status_code == 403 or "challenge" in page.title().lower():
+            page.wait_for_timeout(5000)
+            content = page.content()
+            # Challenge gecildiyse 200 kabul et
+            if "eczane" in content.lower() or "nobetci" in content.lower():
+                status_code = 200
+        else:
+            content = page.content()
+        return FetchResponse(status_code=status_code, text=content)
+    except Exception as e:
+        logger.debug(f"Playwright fetch error: {url} - {e}")
+        return FetchResponse(status_code=0, text="")
+    finally:
+        page.close()
 
 def get_redis_client():
     if REDIS_URL and REDIS_TOKEN:
@@ -410,16 +473,17 @@ def scrape_city(city_slug: str, db_session: Session, proxies=None, max_retries: 
 
 def main():
     init_database()
-    
+    init_browser()
+
     redis = get_redis_client()
     if redis:
         try:
             redis.ping()
-            logger.info("✅ Redis bağlantısı kuruldu")
+            logger.info("Redis baglantisi kuruldu")
         except:
-            logger.warning("⚠️ Redis bağlantısı kurulamadı")
-    
-    logger.info("🌐 Cloudscraper ile Cloudflare bypass aktif")
+            logger.warning("Redis baglantisi kurulamadi")
+
+    logger.info("Playwright ile Cloudflare bypass aktif")
     
     total_results = []
     failed_cities = []
@@ -473,7 +537,9 @@ def main():
         output_file = f"eczaneler_{date.today().isoformat()}.json"
         with open(output_file, "w", encoding="utf-8") as f:
             json.dump(total_results, f, ensure_ascii=False, indent=2)
-        logger.info(f"📁 Sonuçlar kaydedildi: {output_file}")
+        logger.info(f"Sonuclar kaydedildi: {output_file}")
+
+    close_browser()
 
 if __name__ == "__main__":
     main()

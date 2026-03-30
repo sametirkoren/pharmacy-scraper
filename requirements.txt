@@ -3,5 +3,4 @@ sqlalchemy==2.0.23
 psycopg2-binary==2.9.9
 upstash-redis==1.0.0
 beautifulsoup4==4.12.2
-requests==2.31.0
-curl_cffi==0.7.4
+playwright==1.49.1
