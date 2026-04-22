@@ -8,8 +8,8 @@ from datetime import date
 from typing import Optional, List, Dict
 from bs4 import BeautifulSoup
 import time
+from curl_cffi import requests as cffi_requests
 
-from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, Column, Text, Date, and_
 from sqlalchemy.dialects.postgresql import UUID
@@ -58,75 +58,38 @@ class Pharmacy(Base):
     latitude = Column(Text)
     longitude = Column(Text)
 
-# Playwright browser yönetimi
-_playwright = None
-_browser: Optional[Browser] = None
-_context: Optional[BrowserContext] = None
+_request_count = 0
+
+IMPERSONATE_ROTATION = ["chrome120", "chrome119", "safari17_0", "edge101"]
 
 
-class FetchResponse:
-    """requests-uyumlu response wrapper"""
-    def __init__(self, status_code: int, text: str):
-        self.status_code = status_code
-        self.text = text
+def fetch_url(url: str, timeout: int = 30, attempts: int = 4):
+    """Direkt fetch: curl_cffi ile tarayıcı TLS fingerprint'i taklit edilir.
 
-
-def init_browser():
-    """Playwright browser başlat"""
-    global _playwright, _browser, _context
-    _playwright = sync_playwright().start()
-    _browser = _playwright.chromium.launch(headless=True)
-    _context = _browser.new_context(
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        viewport={"width": 1920, "height": 1080},
-        locale="tr-TR",
-        timezone_id="Europe/Istanbul",
-    )
-    # Webdriver detection'ı gizle
-    _context.add_init_script("""
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        Object.defineProperty(navigator, 'languages', { get: () => ['tr-TR', 'tr', 'en-US', 'en'] });
-        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-        window.chrome = { runtime: {} };
-    """)
-    logger.info("Playwright browser baslatildi")
-
-
-def close_browser():
-    """Playwright browser kapat"""
-    global _playwright, _browser, _context
-    if _context:
-        _context.close()
-    if _browser:
-        _browser.close()
-    if _playwright:
-        _playwright.stop()
-    _context = None
-    _browser = None
-    _playwright = None
-
-
-def fetch_url(url: str, timeout: int = 30) -> FetchResponse:
-    """Playwright ile sayfa cek (Cloudflare bypass)"""
-    page = _context.new_page()
-    try:
-        response = page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
-        status_code = response.status if response else 0
-        # Cloudflare challenge varsa bekle
-        if status_code == 403 or "challenge" in page.title().lower():
-            page.wait_for_timeout(5000)
-            content = page.content()
-            # Challenge gecildiyse 200 kabul et
-            if "eczane" in content.lower() or "nobetci" in content.lower():
-                status_code = 200
-        else:
-            content = page.content()
-        return FetchResponse(status_code=status_code, text=content)
-    except Exception as e:
-        logger.debug(f"Playwright fetch error: {url} - {e}")
-        return FetchResponse(status_code=0, text="")
-    finally:
-        page.close()
+    403/429/503 durumunda exponential backoff ile yeniden dener;
+    impersonate profili her denemede rastgele rotate edilir.
+    """
+    global _request_count
+    last_resp = None
+    for i in range(attempts):
+        impersonate = random.choice(IMPERSONATE_ROTATION)
+        try:
+            resp = cffi_requests.get(url, impersonate=impersonate, timeout=timeout)
+            _request_count += 1
+            if _request_count % 20 == 0:
+                logger.info(f"HTTP istek sayisi: {_request_count}")
+            if resp.status_code == 200:
+                return resp
+            last_resp = resp
+            if resp.status_code in (403, 429, 503):
+                time.sleep(2 ** i + random.uniform(0, 1.5))
+                continue
+            return resp
+        except Exception:
+            if i == attempts - 1:
+                raise
+            time.sleep(2 ** i)
+    return last_resp
 
 def get_redis_client():
     if REDIS_URL and REDIS_TOKEN:
@@ -386,9 +349,11 @@ def scrape_page(url: str, city_name: str, city_slug: str, db_session: Session, p
                     href = detail_link.get('href')
                     detail_url = href if href.startswith('http') else "https://www.eczaneler.gen.tr" + href
                 
-                if detail_url:
-                    lat, lon = get_coords_from_detail_page(detail_url, proxies)
-                    time.sleep(0.2)
+                # Koordinat cekmeyi atla (API kredi tasarrufu)
+                # Detay sayfalari cok fazla kredi tuketir
+                # if detail_url:
+                #     lat, lon = get_coords_from_detail_page(detail_url, proxies)
+                #     time.sleep(0.2)
                 
                 pharmacy_data = {
                     "city": city_name,
@@ -447,33 +412,16 @@ def scrape_page(url: str, city_name: str, city_slug: str, db_session: Session, p
 def scrape_city(city_slug: str, db_session: Session, proxies=None, max_retries: int = 3) -> List[Dict]:
     url = f"https://www.eczaneler.gen.tr/nobetci-{city_slug}"
     city_name = get_city_name(city_slug)
-    
-    # Önce ilçe sayfalarını dene (linkler orada var)
-    district_urls = get_district_urls(city_slug, proxies)
-    
-    if district_urls:
-        logger.info(f"🏘️ {city_name}: {len(district_urls)} ilçe bulundu, ilçe sayfaları scrape edilecek")
-        all_results = []
-        for district_url in district_urls:
-            results = scrape_page(district_url, city_name, city_slug, db_session, proxies)
-            if results:
-                all_results.extend(results)
-            time.sleep(0.3)
-        
-        if all_results:
-            logger.info(f"✅ {city_name}: {len(all_results)} eczane (ilçe sayfalarından)")
-            return all_results
-    
-    # İlçe yoksa ana sayfayı scrape et (küçük şehirler için)
-    logger.info(f"� {city_name}: Ana sayfa scrape edilecek")
+
+    # Sadece ana sayfa scrape et (API kredi tasarrufu - ilce sayfalari atlaniyor)
+    logger.info(f"{city_name}: scrape ediliyor")
     results = scrape_page(url, city_name, city_slug, db_session, proxies)
     if results:
-        logger.info(f"✅ {city_name}: {len(results)} eczane (ana sayfadan)")
+        logger.info(f"{city_name}: {len(results)} eczane")
     return results
 
 def main():
     init_database()
-    init_browser()
 
     redis = get_redis_client()
     if redis:
@@ -483,7 +431,7 @@ def main():
         except:
             logger.warning("Redis baglantisi kurulamadi")
 
-    logger.info("Playwright ile Cloudflare bypass aktif")
+    logger.info("curl_cffi direct fetch aktif")
     
     total_results = []
     failed_cities = []
@@ -539,7 +487,7 @@ def main():
             json.dump(total_results, f, ensure_ascii=False, indent=2)
         logger.info(f"Sonuclar kaydedildi: {output_file}")
 
-    close_browser()
+    logger.info(f"Toplam HTTP istegi: {_request_count}")
 
 if __name__ == "__main__":
     main()

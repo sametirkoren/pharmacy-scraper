@@ -1,16 +1,12 @@
-# Nöbetçi Eczane Scraper 🏥
+# Nöbetçi Eczane Scraper
 
-Türkiye genelindeki **82 şehir** ve tüm ilçelerden nöbetçi eczane verilerini çeken, PostgreSQL ve Redis'e kaydeden scraper.
+Türkiye genelindeki 82 şehir için `eczaneler.gen.tr`'den nöbetçi eczane verisini çeker, PostgreSQL'e yazar ve Upstash Redis'e şehir bazlı önbellekler.
 
-## Özellikler
+## Mimari
 
-- 🧅 **Tor Proxy** - Cloudflare bypass için zorunlu
-- 🚀 **Paralel İşlem** - 5 worker ile hızlı scraping
-- 📍 **Koordinat Çekme** - Detay sayfalarından lat/long
-- 🏘️ **İlçe Bazlı** - Doğru ilçe bilgisi (URL'den)
-- 💾 **PostgreSQL** - Kalıcı veri depolama
-- ⚡ **Redis Cache** - Şehir bazlı hızlı erişim
-- 📅 **Günlük Çalışma** - GitHub Actions cron job
+- **Fetch:** `curl_cffi` — Chrome/Safari/Edge TLS fingerprint'lerini impersonate ederek Cloudflare bypass, exponential backoff ile yeniden deneme.
+- **Runtime:** Claude Code **routine** — günde bir kez Anthropic cloud sandbox'ında çalışır, bu repo'yu clone eder ve `python eczane_scraper_requests.py` komutunu koşturur.
+- **Storage:** PostgreSQL (SQLAlchemy upsert, `pharmacies` tablosu) + Upstash Redis REST (günlük şehir bazlı snapshot).
 
 ## Veri Yapısı
 
@@ -21,37 +17,19 @@ Türkiye genelindeki **82 şehir** ve tüm ilçelerden nöbetçi eczane verileri
   "pharmacy": "Merkez Eczanesi",
   "address": "Caferağa Mah. Moda Cad. No:12",
   "phone": "0 (216) 123-45-67",
-  "date": "2026-01-11",
-  "latitude": "40.987654",
-  "longitude": "29.012345"
+  "date": "2026-04-22",
+  "latitude": null,
+  "longitude": null
 }
 ```
 
-## Kurulum
-
-### Gereksinimler
+## Lokal çalıştırma
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### Tor Proxy (Zorunlu)
-
-**macOS:**
-```bash
-brew install tor
-brew services start tor
-```
-
-**Ubuntu/GitHub Actions:**
-```bash
-sudo apt-get install tor
-sudo service tor start
-```
-
-### Çevre Değişkenleri
-
-`.env` dosyası oluştur:
+`.env`:
 
 ```env
 DATABASE_URL=postgresql://user:pass@host:port/db
@@ -59,37 +37,33 @@ UPSTASH_REDIS_REST_URL=https://xxx.upstash.io
 UPSTASH_REDIS_REST_TOKEN=xxx
 ```
 
-## Kullanım
-
 ```bash
 python eczane_scraper_requests.py
 ```
 
-## GitHub Actions
+## Günlük schedule: Claude routines
 
-Workflow her gün **UTC 03:00** (Türkiye 06:00) otomatik çalışır.
+Scraper, Anthropic cloud sandbox'ında günde bir kez çalışan bir **Claude routine** olarak kuruludur. Routine repo'yu clone eder, bağımlılıkları kurar, secret'ları export edip script'i koşturur.
 
-### Secrets
+- **Zamanlama:** Her gün 09:30 Europe/Istanbul (06:30 UTC), cron `30 6 * * *`
+- **Repo:** Public (routine auth olmadan clone eder)
+- **Secrets:** `DATABASE_URL`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` — routine prompt'unda inline; Anthropic routines config'inde saklanır.
 
-Repository Settings → Secrets → Actions:
+Routine'u yönetmek için: <https://claude.ai/code/routines>
 
-| Secret | Açıklama |
-|--------|----------|
-| `DATABASE_URL` | PostgreSQL bağlantı URL'i |
-| `UPSTASH_REDIS_REST_URL` | Redis URL |
-| `UPSTASH_REDIS_REST_TOKEN` | Redis token |
-
-### Manuel Çalıştırma
-
-Actions → Daily Pharmacy Scraper → Run workflow
-
-## Redis Key Format
+## Redis key formatı
 
 ```
-{Şehir}:{Tarih}
-İstanbul:2026-01-11
-Ankara:2026-01-11
+{Şehir}:{YYYY-MM-DD}
+İstanbul:2026-04-22
+Ankara:2026-04-22
 ```
+
+## Sorun giderme
+
+- **403 Forbidden log'da:** Sandbox çıkış IP'si Cloudflare'a takılmış olabilir. Routine prompt'una bir residential/free proxy katmanı eklenebilir veya alternatif runtime (Fly.io, Render.com cron, Oracle Cloud Free VM) değerlendirilebilir.
+- **`curl_cffi` kurulumu başarısız:** Sandbox Python sürümünü kontrol et — wheel Python 3.8+'a gereksinir.
+- **Secrets değişti:** Routine config'ini `claude.ai/code/routines` üzerinden düzenle; prompt'taki env export satırlarını güncelle.
 
 ## Lisans
 
